@@ -11,7 +11,14 @@ from pydantic import Field
 
 from openai._utils import PropertyInfo
 from openai._compat import PYDANTIC_V1, parse_obj, model_dump, model_json
-from openai._models import DISCRIMINATOR_CACHE, BaseModel, GenericModel, EagerIterable, construct_type
+from openai._models import (
+    DISCRIMINATOR_CACHE,
+    BaseModel,
+    GenericModel,
+    EagerIterable,
+    construct_type,
+    _build_discriminated_union_meta,
+)
 
 
 class BasicModel(BaseModel):
@@ -913,6 +920,34 @@ def test_discriminated_unions_invalid_data_uses_cache() -> None:
     # if the discriminator details object stays the same between invocations then
     # we hit the cache
     assert DISCRIMINATOR_CACHE.get(UnionType) is discriminator
+
+
+@pytest.mark.skipif(PYDANTIC_V1, reason="Only Pydantic v2 defers core schema builds")
+def test_discriminated_union_with_unbuilt_variant_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    class A(BaseModel):
+        kind: Literal["a"] = Field(alias="type")
+        data: str
+
+    class B(BaseModel):
+        kind: Literal["b"] = Field(alias="type")
+        data: int
+
+    union = cast(Any, Union[A, B])
+    # A concurrent deferred build can expose a reference rather than model fields.
+    monkeypatch.setattr(B, "__pydantic_core_schema__", {"type": "definition-ref"})
+
+    details = _build_discriminated_union_meta(union=union, meta_annotations=(PropertyInfo(discriminator="kind"),))
+
+    assert details is not None
+    assert details.field_alias_from == "type"
+    assert details.mapping == {"a": A, "b": B}
+    assert DISCRIMINATOR_CACHE.get(union) is details
+
+    model = construct_type(
+        value={"type": "b", "data": "invalid"},
+        type_=cast(Any, Annotated[union, PropertyInfo(discriminator="kind")]),
+    )
+    assert isinstance(model, B)
 
 
 @pytest.mark.skipif(PYDANTIC_V1, reason="TypeAliasType is not supported in Pydantic v1")
