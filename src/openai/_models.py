@@ -86,7 +86,6 @@ from ._constants import RAW_RESPONSE_HEADER
 if TYPE_CHECKING:
     from pydantic import GetCoreSchemaHandler, ValidatorFunctionWrapHandler
     from pydantic_core import CoreSchema, core_schema
-    from pydantic_core.core_schema import ModelField
 else:
     try:
         from pydantic_core import CoreSchema, core_schema
@@ -816,17 +815,18 @@ def _build_discriminated_union_meta(*, union: type, meta_annotations: tuple[Any,
                         if isinstance(entry, str):
                             mapping[entry] = variant
             else:
-                field = _extract_field_schema_pv2(variant, discriminator_field_name)
+                # Field declarations are available before Pydantic builds the model's core
+                # schema. A concurrent deferred build can expose a temporary schema here.
+                field = get_model_fields(variant).get(discriminator_field_name)
                 if not field:
                     continue
 
                 # Note: if one variant defines an alias then they all should
-                discriminator_alias = field.get("serialization_alias")
+                discriminator_alias = field.serialization_alias
 
-                field_schema = field["schema"]
-
-                if field_schema["type"] == "literal":
-                    for entry in field_schema["expected"]:
+                annotation = field.annotation
+                if annotation is not None and is_literal_type(annotation):
+                    for entry in get_args(annotation):
                         if isinstance(entry, str):
                             mapping[entry] = variant
 
@@ -844,25 +844,6 @@ def _build_discriminated_union_meta(*, union: type, meta_annotations: tuple[Any,
         # Caching is optional; still return the discriminator for unsupported keys.
         pass
     return details
-
-
-def _extract_field_schema_pv2(model: type[BaseModel], field_name: str) -> ModelField | None:
-    schema = model.__pydantic_core_schema__
-    if schema["type"] == "definitions":
-        schema = schema["schema"]
-
-    if schema["type"] != "model":
-        return None
-
-    fields_schema = schema["schema"]
-    if fields_schema["type"] != "model-fields":
-        return None
-
-    field = fields_schema["fields"].get(field_name)
-    if not field:
-        return None
-
-    return field
 
 
 def validate_type(*, type_: type[_T], value: object) -> _T:
